@@ -17,8 +17,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 1. Upgrade to v4.0.4 (official fix removed the tools package)
-      # 2. Explicitly specify only install platform-tools and build-tools
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4.0.4
         with:
@@ -27,8 +25,9 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
+      # 关键修改：将 Gradle 版本明确指定为兼容的 8.2 版本
       - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.1.4
+        run: gradle wrapper --gradle-version 8.2
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
