@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ta_bg">#0E1621</color>
+    <color name="ta_card">#16212F</color>
+    <color name="ta_stroke">#243447</color>
+    <color name="ta_text">#E8EEF5</color>
+    <color name="ta_sub">#8EA3B8</color>
+    <color name="ta_accent">#5B8DEF</color>
+    <color name="ta_danger">#F2625A</color>
+    <color name="ta_rec">#E5484D</color>
+
+    <style name="Theme.TaskAutomator" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/ta_accent</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSurface">@color/ta_bg</item>
+        <item name="colorOnSurface">@color/ta_text</item>
+        <item name="colorError">@color/ta_danger</item>
+        <item name="android:windowBackground">@color/ta_bg</item>
+        <item name="android:statusBarColor">@color/ta_bg</item>
+        <item name="android:navigationBarColor">@color/ta_bg</item>
+    </style>
+</resources>
