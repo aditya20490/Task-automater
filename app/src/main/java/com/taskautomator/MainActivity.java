@@ -38,6 +38,9 @@ public class MainActivity extends AppCompatActivity {
         adapter = new ProjectAdapter();
         list.setAdapter(adapter);
 
+        findViewById(R.id.downloadsBtn).setOnClickListener(v ->
+            startActivity(new Intent(this, DownloadsActivity.class)));
+
         findViewById(R.id.newBtn).setOnClickListener(v ->
             UiUtil.projectDialog(this, "New project", "", "https://", (name, url) -> {
                 Intent i = new Intent(this, BrowserActivity.class);
