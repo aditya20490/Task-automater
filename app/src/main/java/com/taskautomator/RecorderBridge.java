@@ -3,7 +3,10 @@ package com.taskautomator;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Base64;
+import android.view.InputDevice;
+import android.view.MotionEvent;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.widget.Toast;
@@ -88,11 +91,35 @@ public class RecorderBridge {
             byte[] bytes = header.contains(";base64")
                     ? Base64.decode(body, Base64.DEFAULT)
                     : URLDecoder.decode(body, "UTF-8").getBytes("UTF-8");
-            FileSaver.save(c, bytes, mime, fileName);
-            toast(c, "Downloaded: " + fileName);
+            Downloader.saveBytes(c, bytes, mime, fileName);
         } catch (Exception e) {
             toast(c, "Download failed");
         }
+    }
+
+    /**
+     * Called by the page during a run: does a REAL finger tap at this spot,
+     * so websites treat it exactly like you tapping (this is what lets downloads start).
+     */
+    @JavascriptInterface
+    public void tapAt(final float xr, final float yr) {
+        main.post(() -> {
+            final float x = xr * webView.getWidth();
+            final float y = yr * webView.getHeight();
+            final long t = SystemClock.uptimeMillis();
+            MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0);
+            down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+            webView.dispatchTouchEvent(down);
+            down.recycle();
+            main.postDelayed(() -> {
+                MotionEvent up = MotionEvent.obtain(t, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0);
+                up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                webView.dispatchTouchEvent(up);
+                up.recycle();
+                final StepListener l = stepListener;
+                if (l != null) l.onStepDone(true);
+            }, 80);
+        });
     }
 
     // ---------- called from Java ----------
@@ -220,7 +247,19 @@ public class RecorderBridge {
             "    if(!el){ if(++tries<30){ setTimeout(attempt,300); } else { done(false); } return; }" +
             "    try{" +
             "      if(el.scrollIntoView) el.scrollIntoView({block:'center'});" +
-            "      if(s.type==='click'){ fire(el,'mousedown'); fire(el,'mouseup'); el.click(); }" +
+            "      if(s.type==='click'){" +
+            "        setTimeout(function(){" +
+            "          try{" +
+            "            var r=el.getBoundingClientRect();" +
+            "            var cx=r.left+r.width/2, cy=r.top+r.height/2;" +
+            "            var hit=(cx>=0&&cy>=0&&cx<=window.innerWidth&&cy<=window.innerHeight)?document.elementFromPoint(cx,cy):null;" +
+            "            if(hit && (hit===el||el.contains(hit)) && window.AndroidBridge && AndroidBridge.tapAt){" +
+            "              AndroidBridge.tapAt(cx/window.innerWidth, cy/window.innerHeight);" +
+            "            } else { fire(el,'mousedown'); fire(el,'mouseup'); el.click(); done(true); }" +
+            "          }catch(e2){ try{ el.click(); }catch(e3){} done(true); }" +
+            "        },400);" +
+            "        return;" +
+            "      }" +
             "      else if(s.type==='type'){" +
             "        el.focus();" +
             "        var proto=(el.tagName==='TEXTAREA')?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;" +
