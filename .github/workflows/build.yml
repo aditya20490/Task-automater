@@ -17,10 +17,13 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      # 1. Upgrade to v4.0.4 (official fix removed the tools package)
+      # 2. Explicitly specify only install platform-tools and build-tools
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4.0.4
+        with:
+          packages: 'platform-tools build-tools;34.0.0'
 
-      # 👇 The key steps: automatically generate the missing gradlew
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
