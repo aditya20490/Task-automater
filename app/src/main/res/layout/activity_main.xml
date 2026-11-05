@@ -43,12 +43,25 @@
                     android:textSize="14sp"/>
             </LinearLayout>
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/downloadsBtn"
-                style="@style/Widget.Material3.Button.TextButton"
+            <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="⬇ Downloads"/>
+                android:orientation="vertical">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/downloadsBtn"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="⬇ Downloads"/>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/importBtn"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="⬆ Import task"/>
+            </LinearLayout>
         </LinearLayout>
 
         <androidx.recyclerview.widget.RecyclerView
