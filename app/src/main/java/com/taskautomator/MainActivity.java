@@ -1,17 +1,25 @@
 package com.taskautomator;
 
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -24,6 +32,10 @@ public class MainActivity extends AppCompatActivity {
     private TextView emptyText;
     private final List<Project> projects = new ArrayList<>();
     private ProjectAdapter adapter;
+
+    // file picker for importing a task file
+    private final ActivityResultLauncher<String[]> picker =
+            registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::importFrom);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -38,6 +50,8 @@ public class MainActivity extends AppCompatActivity {
         adapter = new ProjectAdapter();
         list.setAdapter(adapter);
 
+        findViewById(R.id.importBtn).setOnClickListener(v -> picker.launch(new String[]{"*/*"}));
+
         findViewById(R.id.downloadsBtn).setOnClickListener(v ->
             startActivity(new Intent(this, DownloadsActivity.class)));
 
@@ -49,6 +63,29 @@ public class MainActivity extends AppCompatActivity {
                 i.putExtra("url", url);
                 startActivity(i);
             }));
+    }
+
+    private void importFrom(Uri uri) {
+        if (uri == null) return;
+        try {
+            InputStream in = getContentResolver().openInputStream(uri);
+            if (in == null) throw new Exception("Could not open file");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                if (out.size() > 10 * 1024 * 1024) throw new Exception("File too big");
+            }
+            in.close();
+            Project p = ProjectFile.parse(new String(out.toByteArray(), StandardCharsets.UTF_8));
+            store.save(p);
+            Toast.makeText(this, "Imported “" + p.name + "” · " + p.steps.length() + " steps",
+                    Toast.LENGTH_LONG).show();
+            onResume();
+        } catch (Exception e) {
+            Toast.makeText(this, "That is not a valid task file", Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
