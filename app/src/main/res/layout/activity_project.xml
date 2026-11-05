@@ -28,6 +28,13 @@
             android:layout_weight="1"/>
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/exportBtn"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⬆ Export"/>
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/editBtn"
             style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="wrap_content"
