@@ -1,9 +1,11 @@
 package com.taskautomator;
 
 import android.annotation.SuppressLint;
+import android.graphics.Bitmap;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
-import android.view.View;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -23,7 +25,14 @@ public class MainActivity extends AppCompatActivity {
     private Button loadBtn, recordBtn, finishBtn, runBtn;
     private TextView statusText;
 
-    private String savedStepsJson = null;   // null = nothing recorded yet
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private volatile boolean pageLoading = false;
+
+    // replay state
+    private boolean replaying = false;
+    private int replayIndex = 0;
+    private int replayToken = 0;
+    private int waitedMs = 0;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -42,28 +51,36 @@ public class MainActivity extends AppCompatActivity {
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
-        s.setAllowFileAccess(true);
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
         s.setUserAgentString(s.getUserAgentString().replace("; wv", ""));
-        // Note: no setSupportMultipleWindows needed for basic use
-
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                if (bridge != null) {
-                    bridge.injectScript();
-                }
-            }
-        });
-        webView.setWebChromeClient(new WebChromeClient());
 
         bridge = new RecorderBridge(webView);
         webView.addJavascriptInterface(bridge, "AndroidBridge");
 
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                pageLoading = true;
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                pageLoading = false;
+                bridge.injectScript();   // re-attach on every page; steps are kept in Java
+            }
+        });
+        webView.setWebChromeClient(new WebChromeClient());
+
+        bridge.setListener(() -> {
+            if (!replaying) return;
+            final int t = ++replayToken;           // invalidates the watchdog of the step that just finished
+            handler.postDelayed(() -> runNext(t), 1000);
+        });
+
         loadBtn.setOnClickListener(v -> {
             String url = urlInput.getText().toString().trim();
-            if (TextUtils.isEmpty(url)) { Toast.makeText(this,"Enter URL",Toast.LENGTH_SHORT).show(); return; }
+            if (TextUtils.isEmpty(url)) { Toast.makeText(this, "Enter URL", Toast.LENGTH_SHORT).show(); return; }
             if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
             urlInput.setText(url);
             webView.loadUrl(url);
@@ -71,60 +88,78 @@ public class MainActivity extends AppCompatActivity {
         });
 
         recordBtn.setOnClickListener(v -> {
-            if (webView.getUrl() == null) { Toast.makeText(this,"Load a page first",Toast.LENGTH_SHORT).show(); return; }
-            webView.evaluateJavascript("window.__TA_startRecord && window.__TA_startRecord()", value -> {
-                bridge.setRecording(true);
-                statusText.setText("🔴 Recording… tap/type on the page.");
-                finishBtn.setEnabled(true);
-                recordBtn.setEnabled(false);
-                runBtn.setEnabled(false);
-            });
+            if (webView.getUrl() == null) { Toast.makeText(this, "Load a page first", Toast.LENGTH_SHORT).show(); return; }
+            bridge.clearSteps();
+            bridge.injectScript();
+            bridge.setRecording(true);
+            statusText.setText("🔴 Recording… tap/type on the page.");
+            finishBtn.setEnabled(true);
+            recordBtn.setEnabled(false);
+            runBtn.setEnabled(false);
         });
 
         finishBtn.setOnClickListener(v -> {
-            webView.evaluateJavascript("window.__TA_finishRecord && window.__TA_finishRecord()", value -> {
-                bridge.setRecording(false);
-                // value is a JSON string of steps, wrapped with quotes by evaluateJavascript
-                savedStepsJson = unquote(value);
-                int count = countSteps(savedStepsJson);
-                statusText.setText("✅ Saved " + count + " steps. Tap Run to replay.");
-                finishBtn.setEnabled(false);
-                recordBtn.setEnabled(true);
-                runBtn.setEnabled(count > 0);
-            });
+            bridge.setRecording(false);
+            int count = bridge.getStepCount();
+            statusText.setText("✅ Saved " + count + " steps. Tap Run to replay.");
+            finishBtn.setEnabled(false);
+            recordBtn.setEnabled(true);
+            runBtn.setEnabled(count > 0);
         });
 
         runBtn.setOnClickListener(v -> {
-            if (savedStepsJson == null || savedStepsJson.isEmpty() || savedStepsJson.equals("[]")) {
-                Toast.makeText(this,"No steps saved",Toast.LENGTH_SHORT).show();
+            if (bridge.getStepCount() == 0) {
+                Toast.makeText(this, "No steps saved", Toast.LENGTH_SHORT).show();
                 return;
             }
-            // Re-inject in case page reloaded
-            bridge.injectScript();
-            final String steps = savedStepsJson;
-            webView.postDelayed(() -> {
-                String escaped = steps.replace("\\", "\\\\").replace("'", "\\'");
-                webView.evaluateJavascript(
-                    "window.__TA_replay && window.__TA_replay('" + escaped + "')", null);
-                statusText.setText("▶ Replaying " + countSteps(steps) + " steps…");
-            }, 500);
+            bridge.setRecording(false);
+            replaying = true;
+            replayIndex = 0;
+            waitedMs = 0;
+            recordBtn.setEnabled(false);
+            runBtn.setEnabled(false);
+            final int t = ++replayToken;
+            handler.postDelayed(() -> runNext(t), 500);
         });
     }
 
-    private String unquote(String v) {
-        if (v == null) return "[]";
-        if (v.startsWith("\"") && v.endsWith("\"") && v.length() >= 2) {
-            v = v.substring(1, v.length() - 1);
-            v = v.replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", "\n");
+    /** Runs one recorded step, then waits for the page to finish its job before the next one. */
+    private void runNext(final int token) {
+        if (!replaying || token != replayToken) return;
+
+        final int total = bridge.getStepCount();
+        if (replayIndex >= total) {
+            finishReplay("✅ Replay finished (" + total + " steps).");
+            return;
         }
-        return v;
+        // wait while a page is still loading (max ~15 s)
+        if (pageLoading && waitedMs < 15000) {
+            waitedMs += 300;
+            handler.postDelayed(() -> runNext(token), 300);
+            return;
+        }
+        waitedMs = 0;
+
+        final int idx = replayIndex++;
+        statusText.setText("▶ Step " + (idx + 1) + " of " + total);
+        bridge.injectScript();
+        webView.evaluateJavascript("window.__TA_do && window.__TA_do(" + bridge.getStep(idx) + ")", null);
+
+        // watchdog: if the page navigated away and the step never reported back, move on
+        handler.postDelayed(() -> {
+            if (replaying && token == replayToken) {
+                final int t = ++replayToken;
+                runNext(t);
+            }
+        }, 15000);
     }
 
-    private int countSteps(String json) {
-        if (json == null || json.isEmpty()) return 0;
-        int c = 0;
-        for (int i = 0; i < json.length(); i++) if (json.charAt(i) == '{') c++;
-        return c;
+    private void finishReplay(String msg) {
+        replaying = false;
+        replayToken++;
+        statusText.setText(msg);
+        recordBtn.setEnabled(true);
+        runBtn.setEnabled(bridge.getStepCount() > 0);
     }
 
     @Override
