@@ -44,6 +44,13 @@ public class ProjectActivity extends AppCompatActivity {
 
         findViewById(R.id.backBtn).setOnClickListener(v -> finish());
 
+        findViewById(R.id.exportBtn).setOnClickListener(v -> {
+            final Project p = project;
+            Toast.makeText(this, "Exporting…", Toast.LENGTH_SHORT).show();
+            new Thread(() -> Downloader.saveBytes(getApplicationContext(),
+                    ProjectFile.toBytes(p), "application/json", ProjectFile.fileName(p))).start();
+        });
+
         findViewById(R.id.editBtn).setOnClickListener(v ->
             UiUtil.projectDialog(this, "Edit project", project.name, project.url, (name, url) -> {
                 project.name = name;
