@@ -2,16 +2,15 @@ package com.taskautomator;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
-import android.app.DownloadManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Message;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -174,6 +173,8 @@ public class BrowserActivity extends AppCompatActivity {
         s.setUseWideViewPort(true);
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
+        s.setSupportMultipleWindows(true);
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setUserAgentString(s.getUserAgentString().replace("; wv", ""));
 
         CookieManager.getInstance().setAcceptCookie(true);
@@ -206,6 +207,27 @@ public class BrowserActivity extends AppCompatActivity {
                 progress.setProgressCompat(newProgress, true);
                 progress.setVisibility(newProgress >= 100 ? View.INVISIBLE : View.VISIBLE);
             }
+
+            // Some sites open the download in a new window / tab: catch it and keep it inside the app.
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
+                final WebView popup = new WebView(BrowserActivity.this);
+                popup.getSettings().setJavaScriptEnabled(true);
+                popup.setDownloadListener((url, ua, cd, mime, len) -> startDownload(url, ua, cd, mime));
+                popup.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {
+                        String u = request.getUrl().toString();
+                        if (u.startsWith("http://") || u.startsWith("https://")) webView.loadUrl(u);
+                        handler.postDelayed(popup::destroy, 1500);
+                        return true;
+                    }
+                });
+                WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+                transport.setWebView(popup);
+                resultMsg.sendToTarget();
+                return true;
+            }
         });
 
         // Downloads: tapping a download link/button saves the file to the phone's Downloads folder.
@@ -228,6 +250,7 @@ public class BrowserActivity extends AppCompatActivity {
     // ---------------------------------------------------------------- downloads
 
     private void startDownload(String url, String userAgent, String contentDisposition, String mimeType) {
+        pageLoading = false;   // a download never replaces the page, so don't keep waiting for it
         String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
         try {
             if (url.startsWith("blob:")) {
@@ -240,22 +263,13 @@ public class BrowserActivity extends AppCompatActivity {
                 return;
             }
             if (url.startsWith("data:")) {
-                bridge.saveDataUrl(url, fileName);
+                final String dataUrl = url;
+                final String name = fileName;
+                new Thread(() -> bridge.saveDataUrl(dataUrl, name)).start();
                 return;
             }
-            DownloadManager.Request r = new DownloadManager.Request(Uri.parse(url));
-            if (mimeType != null && !mimeType.isEmpty()) r.setMimeType(mimeType);
             String cookie = CookieManager.getInstance().getCookie(url);
-            if (cookie != null) r.addRequestHeader("Cookie", cookie);
-            if (userAgent != null) r.addRequestHeader("User-Agent", userAgent);
-            String ref = webView.getUrl();
-            if (ref != null) r.addRequestHeader("Referer", ref);
-            r.setTitle(fileName);
-            r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            r.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
-            DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-            dm.enqueue(r);
-            Toast.makeText(this, "Downloading " + fileName, Toast.LENGTH_SHORT).show();
+            Downloader.http(this, url, userAgent, cookie, webView.getUrl(), mimeType, fileName);
         } catch (Exception e) {
             Toast.makeText(this, "Download failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
