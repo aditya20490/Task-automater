@@ -11,11 +11,14 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.provider.OpenableColumns;
+import android.database.Cursor;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.URLUtil;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -26,6 +29,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -34,7 +39,14 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Browser screen. Two modes:
@@ -63,6 +75,13 @@ public class BrowserActivity extends AppCompatActivity {
     private int replayToken = 0;
     private int waitedMs = 0;
     private int failedSteps = 0;
+
+    // file chooser ("Browse file" / <input type=file>)
+    private ValueCallback<Uri[]> filePathCallback;
+    private final Set<Integer> usedFileSteps = new HashSet<>();
+    private final ActivityResultLauncher<Intent> filePicker = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> onFilePicked(result.getResultCode(), result.getData()));
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -120,7 +139,8 @@ public class BrowserActivity extends AppCompatActivity {
             if (!ok) failedSteps++;
             long wait = 600;
             JSONObject next = project.steps.optJSONObject(replayIndex);
-            if (next != null) wait = Math.max(600, Math.min(next.optLong("wait", 600), 30000));
+            if (next != null && "file".equals(next.optString("type"))) wait = 600;   // file step = time spent in the picker
+            else if (next != null) wait = Math.max(600, Math.min(next.optLong("wait", 600), 30000));
             scheduleNext(wait);
         });
 
@@ -208,6 +228,47 @@ public class BrowserActivity extends AppCompatActivity {
                 progress.setVisibility(newProgress >= 100 ? View.INVISIBLE : View.VISIBLE);
             }
 
+            // "Browse file" buttons: let the user pick a file; record it so a run can pick it again.
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (filePathCallback != null) filePathCallback.onReceiveValue(null);
+                filePathCallback = null;
+
+                if (replaying) {
+                    // during a run: answer with the file that was picked while recording
+                    JSONObject step = null;
+                    int at = -1;
+                    for (int i = Math.max(0, replayIndex); i < project.steps.length(); i++) {
+                        JSONObject c = project.steps.optJSONObject(i);
+                        if (c != null && "file".equals(c.optString("type")) && !usedFileSteps.contains(i)) {
+                            step = c; at = i; break;
+                        }
+                    }
+                    if (step == null) { callback.onReceiveValue(null); return true; }
+                    usedFileSteps.add(at);
+                    JSONArray paths = step.optJSONArray("paths");
+                    java.util.ArrayList<Uri> uris = new java.util.ArrayList<>();
+                    if (paths != null) {
+                        for (int i = 0; i < paths.length(); i++) {
+                            File f = new File(paths.optString(i));
+                            if (f.exists()) uris.add(Uri.fromFile(f));
+                        }
+                    }
+                    callback.onReceiveValue(uris.isEmpty() ? null : uris.toArray(new Uri[0]));
+                    return true;
+                }
+
+                filePathCallback = callback;
+                try {
+                    filePicker.launch(params.createIntent());
+                } catch (Exception e) {
+                    filePathCallback = null;
+                    callback.onReceiveValue(null);
+                    Toast.makeText(BrowserActivity.this, "Can't open the file picker", Toast.LENGTH_SHORT).show();
+                }
+                return true;
+            }
+
             // Some sites open the download in a new window / tab: catch it and keep it inside the app.
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
@@ -233,6 +294,76 @@ public class BrowserActivity extends AppCompatActivity {
         // Downloads: tapping a download link/button saves the file to the phone's Downloads folder.
         webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) ->
                 startDownload(url, userAgent, contentDisposition, mimeType));
+    }
+
+    // ---------------------------------------------------------------- file chooser
+
+    private void onFilePicked(int resultCode, Intent data) {
+        final ValueCallback<Uri[]> cb = filePathCallback;
+        filePathCallback = null;
+        if (cb == null) return;
+        if (resultCode != RESULT_OK || data == null) { cb.onReceiveValue(null); return; }
+
+        final java.util.ArrayList<Uri> picked = new java.util.ArrayList<>();
+        if (data.getClipData() != null) {
+            for (int i = 0; i < data.getClipData().getItemCount(); i++)
+                picked.add(data.getClipData().getItemAt(i).getUri());
+        } else if (data.getData() != null) {
+            picked.add(data.getData());
+        }
+        if (picked.isEmpty()) { cb.onReceiveValue(null); return; }
+
+        // copy into the app so the same file can be used again when the task runs
+        new Thread(() -> {
+            final java.util.ArrayList<Uri> out = new java.util.ArrayList<>();
+            final JSONArray paths = new JSONArray();
+            final JSONArray names = new JSONArray();
+            File dir = new File(getFilesDir(), "uploads");
+            dir.mkdirs();
+            for (Uri u : picked) {
+                try {
+                    String name = displayName(u);
+                    File sub = new File(dir, java.util.UUID.randomUUID().toString());
+                    sub.mkdirs();
+                    File f = new File(sub, name);
+                    try (InputStream in = getContentResolver().openInputStream(u);
+                         FileOutputStream os = new FileOutputStream(f)) {
+                        byte[] buf = new byte[16384];
+                        int n;
+                        while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+                    }
+                    out.add(Uri.fromFile(f));
+                    paths.put(f.getAbsolutePath());
+                    names.put(name);
+                } catch (Exception ignored) { }
+            }
+            handler.post(() -> {
+                if (out.isEmpty()) {
+                    cb.onReceiveValue(null);
+                    Toast.makeText(this, "Couldn't read that file", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (recordMode) {
+                    try {
+                        JSONObject step = new JSONObject();
+                        step.put("type", "file");
+                        step.put("paths", paths);
+                        step.put("names", names);
+                        bridge.onAction(step.toString());
+                    } catch (Exception ignored) { }
+                }
+                cb.onReceiveValue(out.toArray(new Uri[0]));
+            });
+        }).start();
+    }
+
+    private String displayName(Uri u) {
+        String name = null;
+        try (Cursor c = getContentResolver().query(u, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) name = c.getString(0);
+        } catch (Exception ignored) { }
+        if (name == null || name.isEmpty()) name = "file";
+        return name.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
     private void cleanSession(final Runnable then) {
@@ -313,6 +444,7 @@ public class BrowserActivity extends AppCompatActivity {
         replayIndex = 0;
         failedSteps = 0;
         waitedMs = 0;
+        usedFileSteps.clear();
         statusText.setText("Starting…");
         scheduleNext(1000);
     }
@@ -350,6 +482,7 @@ public class BrowserActivity extends AppCompatActivity {
         replayIndex++;
         statusText.setText("Running step " + shown + " of " + total);
         if (step == null) { scheduleNext(300); return; }
+        if ("file".equals(step.optString("type"))) { scheduleNext(300); return; }   // handled by the file chooser
 
         bridge.injectScript();
         webView.evaluateJavascript("window.__TA_do && window.__TA_do(" + step.toString() + ")", null);
